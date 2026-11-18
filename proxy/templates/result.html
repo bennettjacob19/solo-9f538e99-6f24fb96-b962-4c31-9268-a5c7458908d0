@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>抓包对账结果 {{ r.id }}</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+         margin: 0 auto; max-width: 1180px; padding: 16px; line-height: 1.5; }
+  h1 { font-size: 1.35rem; } h2 { font-size: 1.05rem; margin: 14px 0 8px; }
+  section { border: 1px solid #8885; border-radius: 8px; padding: 12px 16px; margin: 14px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: .85rem; }
+  th, td { border-bottom: 1px solid #8884; padding: 5px 8px; text-align: left;
+           vertical-align: top; word-break: break-all; }
+  th { opacity: .75; white-space: nowrap; }
+  code { background: #8882; padding: 1px 5px; border-radius: 4px; }
+  .banner { padding: 10px 14px; border-radius: 8px; margin: 10px 0; font-weight: 600; }
+  .banner.ok { background: #2e7d3233; border: 1px solid #2e7d32; }
+  .banner.bad { background: #c6282833; border: 1px solid #c62828; }
+  .cards { display: flex; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
+  .card { border: 1px solid #8885; border-radius: 8px; padding: 10px 16px; min-width: 140px; }
+  .card .label { font-size: .78rem; opacity: .7; }
+  .card .big { font-size: 1.6rem; font-weight: 700; }
+  .num-confirmed { color: #2e7d32; font-weight: 700; }
+  .num-unproven { color: #c62828; font-weight: 700; }
+  .num-missed { color: #b26a00; font-weight: 700; }
+  a.btn { display: inline-block; padding: 8px 16px; border-radius: 6px;
+          border: 1px solid #8888; text-decoration: none; margin-right: 10px; }
+  .muted { opacity: .7; font-size: .82rem; }
+  .hash { font-family: ui-monospace, monospace; font-size: .78rem; }
+</style>
+</head>
+<body>
+<h1>上行抓包对账结果 <code>{{ r.id }}</code></h1>
+<p><a href="/">← 返回控制台</a></p>
+
+{% if r.incomplete %}
+<div class="banner bad">
+  证据不完整 —— 以下“未证实”仅表示两侧记录无法互相印证，<u>不得据此断言丢包</u>。<br>
+  原因：{{ r.incomplete_reason_text | join("；") }}
+</div>
+{% else %}
+<div class="banner ok">
+  证据完整：代理侧与接收器侧均成功启动且未超额，下列对账可作为到达结论。
+</div>
+{% endif %}
+
+<div class="cards">
+  <div class="card"><div class="label">已证实到达（份数）</div>
+    <div class="big num-confirmed">{{ r.totals.confirmed }}</div></div>
+  <div class="card"><div class="label">未证实（代理有/接收器无）</div>
+    <div class="big num-unproven">{{ r.totals.unproven }}</div></div>
+  <div class="card"><div class="label">漏记（接收器有/代理无）</div>
+    <div class="big num-missed">{{ r.totals.missed }}</div></div>
+  <div class="card"><div class="label">代理实际发出</div>
+    <div class="big" style="font-size:1.3rem">{{ r.totals.proxy_sent }}</div></div>
+  <div class="card"><div class="label">接收器实际收到（窗口内）</div>
+    <div class="big" style="font-size:1.3rem">{{ r.totals.receiver_recv }}</div></div>
+</div>
+
+<section>
+  <h2>抓包上下文（冻结后不再变化）</h2>
+  <table>
+    <tr><th>会话 ID</th><td>{{ r.session_id }}</td><th>客户端</th><td><code>{{ r.client }}</code></td></tr>
+    <tr><th>固定接收器</th><td>{{ r.receiver }}</td><th>代理上游端口</th><td>{{ r.upstream_port }}</td></tr>
+    <tr><th>窗口时长</th><td>{{ r.duration }} s（上限 30 s）</td>
+        <th>结束原因</th><td>{{ r.end_reason }}{% if r.session_closed %}（{{ r.session_close_reason }}）{% endif %}</td></tr>
+    <tr><th>代理 PCAP</th><td>{{ r.proxy_pcap_name }}（{{ r.proxy_bytes }} B{% if r.proxy_truncated %}，已抓满截断{% endif %}）</td>
+        <th>接收器 PCAP</th><td>{{ r.receiver_pcap_name or "（未取得）" }}
+          （{{ r.receiver_bytes }} B{% if r.receiver_truncated %}，已抓满截断{% endif %}）</td></tr>
+    <tr><th>每侧上限</th><td>{{ r.cap_max_bytes }} B（1 MiB，抓满只漏记不影响转发）</td>
+        <th>接收器窗口内收报</th><td>{{ r.receiver_received_total }} 条{% if r.receiver_dropped_total %}，其中测试丢弃 {{ r.receiver_dropped_total }} 条{% endif %}</td></tr>
+    {% if r.receiver_window_extra %}
+    <tr><th>窗口外记录</th><td colspan="3">接收器另有 {{ r.receiver_window_extra }} 条早于代理布防时刻，已按规则排除出对账（PCAP 中保留为原始证据）。</td></tr>
+    {% endif %}
+  </table>
+  <p style="margin-top:12px">
+    <a class="btn" href="{{ url_for('capture_download', capture_id=r.id, side='proxy') }}">下载代理侧 PCAP</a>
+    <a class="btn" href="{{ url_for('capture_download', capture_id=r.id, side='receiver') }}">下载接收器侧 PCAP</a>
+    <span class="muted">两份文件均为 Wireshark 可直接打开的标准 PCAP；重复下载字节一致。</span>
+  </p>
+</section>
+
+<section>
+  <h2>按报文摘要对账（同文重发按出现次数核对）</h2>
+  <table>
+    <thead><tr>
+      <th>报文 SHA-256</th><th>内容预览</th>
+      <th>代理发出次数</th><th>接收器收到次数</th>
+      <th>已证实</th><th>未证实</th><th>漏记</th>
+    </tr></thead>
+    <tbody>
+    {% for row in r.rows %}
+      <tr>
+        <td class="hash">{{ row.sha256 }}</td>
+        <td><code>{{ row.preview }}</code></td>
+        <td>{{ row.proxy_count }}</td>
+        <td>{{ row.receiver_count }}</td>
+        <td class="num-confirmed">{{ row.confirmed }}</td>
+        <td class="num-unproven">{{ row.unproven }}</td>
+        <td class="num-missed">{{ row.missed }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="muted">窗口内两侧均无记录的上行报文。</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">对账口径：以两侧都确认启动（代理布防）之后的报文为准；
+     “已证实”= 同摘要两侧次数取小；“未证实”= 代理次数减接收器次数（不自动等同于丢包，证据不完整时仅作存疑）；
+     “漏记”= 接收器次数多于代理次数（停止/收包交错等窗口边界情形）。</p>
+</section>
+</body>
+</html>

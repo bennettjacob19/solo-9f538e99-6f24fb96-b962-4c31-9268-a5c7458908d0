@@ -1,38 +1,53 @@
 services:
   receiver-a:
-    build: ./receiver
+    build:
+      context: .
+      dockerfile: receiver/Dockerfile
     container_name: telemetry-receiver-a
     environment:
       RECEIVER_NAME: A
       LISTEN_PORT: "9001"
-      REPLY_DELAY: "0"          # 默认回包延迟（秒）；报文 "DELAY:<秒>:" 可单次覆盖
+      CONTROL_PORT: "9101"          # 抓包控制 HTTP（仅 compose 内网）
+      REPLY_DELAY: "0"              # 默认回包延迟（秒）；报文 "DELAY:<秒>:" 可单次覆盖
+      CAPTURE_DIR: /captures
+      # DROP_CONTAINS: "LOST"       # 测试用：命中子串的报文整包丢弃，验证“未证实”统计
     networks: [telemetry]
 
   receiver-b:
-    build: ./receiver
+    build:
+      context: .
+      dockerfile: receiver/Dockerfile
     container_name: telemetry-receiver-b
     environment:
       RECEIVER_NAME: B
       LISTEN_PORT: "9001"
+      CONTROL_PORT: "9102"
       REPLY_DELAY: "0"
+      CAPTURE_DIR: /captures
     networks: [telemetry]
 
   proxy:
-    build: ./proxy
+    build:
+      context: .
+      dockerfile: proxy/Dockerfile
     container_name: telemetry-proxy
     environment:
       UDP_LISTEN_PORT: "9000"
       HTTP_PORT: "8080"
-      SESSION_IDLE_TIMEOUT: "5"          # 会话空闲超时（秒）
+      SESSION_IDLE_TIMEOUT: "5"            # 会话空闲超时（秒）
       RECEIVER_A_HOST: receiver-a
       RECEIVER_A_PORT: "9001"
       RECEIVER_B_HOST: receiver-b
       RECEIVER_B_PORT: "9001"
-      DB_PATH: /data/proxy.db            # 目标接收器持久化（重启保留）
-      # UPSTREAM_PORT_COOLDOWN: "30"     # 上游端口冷却，须大于最大回包延迟
+      RECEIVER_A_CONTROL_URL: "http://receiver-a:9101"
+      RECEIVER_B_CONTROL_URL: "http://receiver-b:9102"
+      DB_PATH: /data/proxy.db              # 目标接收器持久化（重启保留）
+      CAPTURE_DIR: /data/captures          # 抓包结果（两份 PCAP + 对账 JSON）
+      # UPSTREAM_PORT_COOLDOWN: "30"       # 上游端口冷却，须大于最大回包延迟
+      # CAP_MAX_BYTES: "1048576"           # 每侧抓包硬上限（默认 1 MiB）
     ports:
-      - "9000:9000/udp"                  # 遥测终端发往这里
-      - "8080:8080"                      # 操作网页
+      - "9000:9000/udp"                    # 遥测终端发往这里
+      - "8080:8080"                        # 操作网页
     volumes:
       - proxy-data:/data
     depends_on:

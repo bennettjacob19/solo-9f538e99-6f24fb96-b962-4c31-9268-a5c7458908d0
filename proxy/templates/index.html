@@ -8,7 +8,7 @@
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
   body { font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
-         margin: 0 auto; max-width: 1080px; padding: 16px; line-height: 1.5; }
+         margin: 0 auto; max-width: 1180px; padding: 16px; line-height: 1.5; }
   h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-bottom: 8px; }
   .cards { display: flex; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
   .card { border: 1px solid #8885; border-radius: 8px; padding: 10px 16px; min-width: 150px; }
@@ -17,7 +17,7 @@
   section { border: 1px solid #8885; border-radius: 8px; padding: 12px 16px; margin: 14px 0; }
   button { padding: 6px 14px; border-radius: 6px; border: 1px solid #8888; cursor: pointer; }
   button:disabled { opacity: .4; cursor: default; }
-  input { padding: 5px 8px; border-radius: 6px; border: 1px solid #8888; }
+  input, select { padding: 5px 8px; border-radius: 6px; border: 1px solid #8888; }
   .flash { padding: 8px 12px; border-radius: 6px; margin: 8px 0; }
   .flash.ok { background: #2e7d3233; border: 1px solid #2e7d32; }
   .flash.error { background: #c6282833; border: 1px solid #c62828; }
@@ -30,6 +30,12 @@
   form .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
   label { font-size: .85rem; }
   code { background: #8882; padding: 1px 5px; border-radius: 4px; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: .75rem;
+          border: 1px solid #8888; }
+  .pill.run { background: #2e7d3233; border-color: #2e7d32; }
+  .pill.bad { background: #c6282833; border-color: #c62828; }
+  .pill.good { background: #1565c033; border-color: #1565c0; }
+  a { color: inherit; }
 </style>
 </head>
 <body>
@@ -55,6 +61,37 @@
     <button type="submit" name="target" value="B" {% if target == "B" %}disabled{% endif %}>切换到 B</button>
   </form>
   <p class="hint">切换只影响之后新建的会话；已存在的会话继续走原接收器，直到空闲 {{ idle_timeout }} 秒过期。保存失败时保留原目标。</p>
+</section>
+
+<section>
+  <h2>上行抓包对账（核查报文是否完整到达接收器）</h2>
+  <form method="post" action="{{ url_for('capture_start') }}" class="row">
+    <label>活动会话
+      <select name="session_id" id="cap-session" required></select>
+    </label>
+    <label>抓包时长(秒，1–{{ cap_max_seconds }})
+      <input name="duration" type="number" min="1" max="{{ cap_max_seconds }}" value="10" style="width:90px">
+    </label>
+    <button type="submit">启动上行抓包</button>
+  </form>
+  <p class="hint">
+    启动顺序：接收器先确认记录、代理侧随后布防，只有两侧都确认启动后的报文才参与对账。
+    每侧 PCAP 硬上限 {{ cap_max_kib }} KiB（1 MiB），抓满只停止记录、原样转发不受影响；
+    任一侧失联或抓满将标记<u>证据不完整</u>，只报告未证实、不断言丢包。
+    同文重发按出现次数核对，不能凭一份收包算作全部到达。
+  </p>
+  <h3 style="font-size:.95rem;margin:12px 0 6px">进行中的抓包</h3>
+  <table>
+    <thead><tr><th>抓包 ID</th><th>会话</th><th>接收器/上游端口</th><th>状态</th>
+      <th>代理已记</th><th>接收器已记</th><th>提示</th></tr></thead>
+    <tbody id="cap-jobs"><tr><td colspan="7" class="hint">加载中…</td></tr></tbody>
+  </table>
+  <h3 style="font-size:.95rem;margin:12px 0 6px">已冻结结果（下载内容永久不变）</h3>
+  <table>
+    <thead><tr><th>抓包 ID</th><th>会话/客户端</th><th>接收器</th><th>证据</th>
+      <th>已证实</th><th>未证实</th><th>漏记</th><th>操作</th></tr></thead>
+    <tbody id="cap-results"><tr><td colspan="8" class="hint">加载中…</td></tr></tbody>
+  </table>
 </section>
 
 <section>
@@ -86,8 +123,8 @@
 <section>
   <h2>活动会话 <span class="hint">（每 2 秒自动刷新）</span></h2>
   <table>
-    <thead><tr><th>ID</th><th>客户端</th><th>固定接收器</th><th>上游端口</th><th>状态</th><th>空闲(s)</th><th>存活(s)</th></tr></thead>
-    <tbody id="sessions"><tr><td colspan="7">加载中…</td></tr></tbody>
+    <thead><tr><th>ID</th><th>客户端</th><th>固定接收器</th><th>上游端口</th><th>状态</th><th>空闲(s)</th><th>存活(s)</th><th>抓包</th></tr></thead>
+    <tbody id="sessions"><tr><td colspan="8">加载中…</td></tr></tbody>
   </table>
 </section>
 
@@ -101,21 +138,62 @@
 
 <script>
 function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+function fmtTime(t) { return t ? new Date(t * 1000).toLocaleTimeString('zh-CN', {hour12:false}) : ''; }
+
 async function refresh() {
-  try {
-    const s = await (await fetch('/api/state')).json();
-    document.getElementById('target').textContent = s.target;
-    const ss = s.sessions.map(x =>
-      `<tr><td>${x.id}</td><td>${esc(x.client)}</td><td><b>${esc(x.receiver)}</b></td>` +
-      `<td>${x.upstream_port ?? ''}</td><td>${esc(x.state)}</td><td>${x.idle}</td><td>${x.age}</td></tr>`);
-    document.getElementById('sessions').innerHTML =
-      ss.join('') || '<tr><td colspan="7">（无活动会话）</td></tr>';
-    const ms = s.messages.map(m =>
+  let s;
+  try { s = await (await fetch('/api/state')).json(); } catch (e) { return; }
+  document.getElementById('target').textContent = s.target;
+
+  // 会话表 + 抓包会话下拉
+  const openSessions = s.sessions.filter(x => x.state === 'open');
+  document.getElementById('cap-session').innerHTML = openSessions.length
+    ? openSessions.map(x =>
+        `<option value="${x.id}">#${x.id} ${esc(x.client)} → 接收器 ${esc(x.receiver)} ` +
+        `(上游 ${x.upstream_port})${x.capturing ? '（抓包中）' : ''}</option>`).join('')
+    : '<option value="" disabled>（暂无活动会话，请先发起遥测流量）</option>';
+
+  document.getElementById('sessions').innerHTML = s.sessions.length
+    ? s.sessions.map(x =>
+        `<tr><td>${x.id}</td><td>${esc(x.client)}</td><td><b>${esc(x.receiver)}</b></td>` +
+        `<td>${x.upstream_port ?? ''}</td><td>${esc(x.state)}</td><td>${x.idle}</td>` +
+        `<td>${x.age}</td><td>${x.capturing ? '<span class="pill run">抓包中</span>' : ''}</td></tr>`).join('')
+    : '<tr><td colspan="8">（无活动会话）</td></tr>';
+
+  // 进行中的抓包
+  document.getElementById('cap-jobs').innerHTML = s.capture_jobs.length
+    ? s.capture_jobs.map(j => {
+        const rs = j.receiver_snapshot || {};
+        const hint = j.incomplete_reasons.length ? esc(j.incomplete_reasons.join(','))
+          : (j.armed ? '两侧均已确认启动' : '等待两侧确认启动…');
+        return `<tr><td><code>${esc(j.id)}</code></td><td>#${j.session_id}</td>` +
+          `<td>${esc(j.receiver)} / ${j.upstream_port}</td>` +
+          `<td><span class="pill run">${esc(j.state)}</span></td>` +
+          `<td>${j.proxy_packets}</td><td>${rs.packets ?? '—'}</td><td class="hint">${hint}</td></tr>`;
+      }).join('')
+    : '<tr><td colspan="7" class="hint">（无）</td></tr>';
+
+  // 已冻结结果
+  document.getElementById('cap-results').innerHTML = s.capture_results.length
+    ? s.capture_results.map(r => {
+        const pill = r.incomplete
+          ? '<span class="pill bad">证据不完整</span>'
+          : '<span class="pill good">证据完整</span>';
+        return `<tr><td><code>${esc(r.id)}</code></td>` +
+          `<td>#${r.session_id} ${esc(r.client)}</td><td>${esc(r.receiver)}</td>` +
+          `<td>${pill}</td>` +
+          `<td class="result-ok">${r.totals.confirmed}</td>` +
+          `<td class="result-err">${r.totals.unproven}</td>` +
+          `<td style="color:#b26a00">${r.totals.missed}</td>` +
+          `<td><a href="/capture/result/${encodeURIComponent(r.id)}">对账详情 / 下载 PCAP</a></td></tr>`;
+      }).join('')
+    : '<tr><td colspan="8" class="hint">（暂无已冻结结果）</td></tr>';
+
+  const ms = s.messages.map(m =>
       `<tr><td>${m.id}</td><td>${esc(m.ts)}</td><td>${esc(m.client)}</td><td>${m.session_id || ''}</td>` +
       `<td>${esc(m.direction)}</td><td>${esc(m.receiver)}</td><td>${esc(m.payload)}</td><td>${esc(m.note)}</td></tr>`);
-    document.getElementById('messages').innerHTML =
+  document.getElementById('messages').innerHTML =
       ms.join('') || '<tr><td colspan="8">（暂无日志）</td></tr>';
-  } catch (e) { /* 下次再试 */ }
 }
 refresh();
 setInterval(refresh, 2000);
